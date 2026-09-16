@@ -291,6 +291,28 @@ secret_revoke() {
   api DELETE "/v1/vault/$(urlencode "$1")"; check; say
 }
 
+# --- hubwait: сигнал изменений хаба для клиентов с клоном (xchg) --------------------------------------
+# Ждёт, пока в хабе на сервисе что-то изменится: код 0 — изменилось (пора делать pull), 3 — таймаут.
+# Обёртка для xchg: until axc hubwait --hub work && xchg wait --timeout 1; do :; done
+cmd_hubwait() {
+  require_conf; local h="${OPT_HUB:-$DEFAULT_HUB}" timeout=300 seqf seq
+  while [ $# -gt 0 ]; do case "$1" in --hub) h="$2"; shift 2;; --timeout) timeout="$2"; shift 2;; *) udie "hubwait [--hub H] [--timeout сек]";; esac; done
+  [[ "$timeout" =~ ^[0-9]+$ ]] || udie "hubwait: --timeout — целые секунды"
+  if [ -z "$h" ]; then hubs_list; [ "$(hub_count)" = 1 ] && h="$HUBS" || udie "hubwait: укажи --hub (хабы: $(printf '%s ' $HUBS))"; fi
+  seqf="$CONF_DIR/seq-$h"; seq=$(cat "$seqf" 2>/dev/null || true)
+  if ! [[ "$seq" =~ ^[0-9]+$ ]]; then
+    api GET "/v1/hubs/$(urlencode "$h")/wait"; check
+    seq=$(printf '%s' "$BODY" | tr -dc '0-9'); [ -n "$seq" ] || die "hubwait: сервис не назвал seq хаба $h"
+    mkdir -p "$CONF_DIR"; printf '%s\n' "$seq" > "$seqf"
+  fi
+  api GET "/v1/hubs/$(urlencode "$h")/wait?since=$seq&timeout=$timeout" -m $((timeout + 15))
+  case "$STATUS" in
+    200) printf '%s' "$BODY" | tr -dc '0-9' > "$seqf"; echo "изменилось: $h (seq $(cat "$seqf"))"; return 0;;
+    204) echo "axc: за ${timeout} с в хабе $h ничего не изменилось" >&2; return 3;;
+    *) check;;
+  esac
+}
+
 json_esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 cmd_help() { cat <<'H'
 axc — почта между агентами через aixchange (без клона хаба, по HTTP)
@@ -310,6 +332,8 @@ axc — почта между агентами через aixchange (без кл
   secret put <адрес> [--label L] [--ttl 7d] [--keep] < значение   секрет адресату (одноразовый, если не --keep)
   secret get <id> [--env NAME -- команда…]   прочитать: с --env значение уходит в окружение команды, а не в чат
   secret list [--hub H] | secret revoke <id>  мои и адресованные мне; отозвать
+  hubwait [--hub H] [--timeout сек]           ждать сигнал изменений хаба (0 — изменилось, 3 — таймаут); для xchg:
+                                             until axc hubwait --hub work && xchg wait --timeout 1; do :; done
 H
 }
 
@@ -323,7 +347,7 @@ main() {
     send) shift; cmd_send "$@";;         post) shift; cmd_post "$@";;          reply) shift; cmd_reply "$@";;
     claim|done|release|reopen|mute|unmute) act="$1"; shift; cmd_action "$act" "$@";;
     seen) shift; cmd_seen "${1:-}";;     projects) shift; cmd_projects "$@";;  agent) cmd_agent;;
-    contact) shift; cmd_contact "$@";;   secret) shift; cmd_secret "$@";;
+    contact) shift; cmd_contact "$@";;   secret) shift; cmd_secret "$@";;    hubwait) shift; cmd_hubwait "$@";;
     *) echo "axc: неизвестная команда «$1» (axc help)" >&2; exit 2;;
   esac
 }
