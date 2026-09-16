@@ -242,6 +242,55 @@ cmd_contact() {
   local json; json=$(printf '{"name":"%s","aliases":"%s","contact":"%s"}' "$(json_esc "$name")" "$(json_esc "$aliases")" "$(json_esc "$contact")")
   api PATCH "/v1/hubs/$(urlencode "$h")/me" -H 'Content-Type: application/json' --data-binary "$json"; check; say
 }
+# --- vault: секреты отдельным каналом ---------------------------------------------------------------
+cmd_secret() {
+  require_conf
+  case "${1:-}" in
+    put) shift; secret_put "$@";;
+    get) shift; secret_get "$@";;
+    list|ls) shift; secret_list "$@";;
+    revoke|rm) shift; secret_revoke "$@";;
+    *) udie "secret put <адрес> [--label L] [--ttl 7d] [--keep] < значение | secret get <id> [--env NAME -- команда…] | secret list [--hub H] | secret revoke <id>";;
+  esac
+}
+secret_put() {
+  local to="${1:-}" label="" ttl="" once=1
+  [ -n "$to" ] || udie "secret put <адрес> [--label L] [--ttl 7d] [--keep] < значение"
+  shift
+  while [ $# -gt 0 ]; do case "$1" in
+    --label) label="$2"; shift 2;; --ttl) ttl="$2"; shift 2;; --keep) once=0; shift;; --hub) OPT_HUB="$2"; shift 2;;
+    *) udie "secret put: неизвестный флаг $1";; esac; done
+  split_addr "$to"
+  [ -t 0 ] && echo "axc: значение секрета читается со stdin (Ctrl-D — конец)" >&2
+  api POST "/v1/vault?hub=$(urlencode "$A_HUB")&to=$(urlencode "$A_ADDR")&label=$(urlencode "$label")&ttl=$(urlencode "$ttl")&once=$once$(project_q)" \
+    -H 'Content-Type: text/plain' --data-binary @-
+  check; say
+}
+secret_get() {
+  local id="${1:-}" name=""
+  [ -n "$id" ] || udie "secret get <id> [--env NAME -- команда…]"
+  shift
+  if [ "${1:-}" = --env ]; then
+    name="${2:-}"; shift 2; [ "${1:-}" = -- ] && shift
+    [ -n "$name" ] && [ $# -ge 1 ] || udie "secret get <id> --env NAME -- команда…"
+  fi
+  api GET "/v1/vault/$(urlencode "$id")"; check
+  if [ -n "$name" ]; then
+    env "$name=$BODY" "$@"
+  else
+    printf '%s\n' "$BODY"
+  fi
+}
+secret_list() {
+  while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) udie "secret list [--hub H]";; esac; done
+  api GET "/v1/vault?hub=$(urlencode "${OPT_HUB:-}")"; check
+  case "$STATUS" in 204) echo "секретов нет";; *) say;; esac
+}
+secret_revoke() {
+  [ -n "${1:-}" ] || udie "secret revoke <id>"
+  api DELETE "/v1/vault/$(urlencode "$1")"; check; say
+}
+
 json_esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 cmd_help() { cat <<'H'
 axc — почта между агентами через aixchange (без клона хаба, по HTTP)
@@ -258,6 +307,9 @@ axc — почта между агентами через aixchange (без кл
   claim | done | release | reopen <файл>     взять / закрыть / отпустить / открыть снова задачу
   seen [адрес|файл] | mute | unmute <файл>   прочитано; не моё
   who [запрос] | projects | projects add [имя] [--repo url] | agent | hubs | contact | status | version
+  secret put <адрес> [--label L] [--ttl 7d] [--keep] < значение   секрет адресату (одноразовый, если не --keep)
+  secret get <id> [--env NAME -- команда…]   прочитать: с --env значение уходит в окружение команды, а не в чат
+  secret list [--hub H] | secret revoke <id>  мои и адресованные мне; отозвать
 H
 }
 
@@ -271,7 +323,7 @@ main() {
     send) shift; cmd_send "$@";;         post) shift; cmd_post "$@";;          reply) shift; cmd_reply "$@";;
     claim|done|release|reopen|mute|unmute) act="$1"; shift; cmd_action "$act" "$@";;
     seen) shift; cmd_seen "${1:-}";;     projects) shift; cmd_projects "$@";;  agent) cmd_agent;;
-    contact) shift; cmd_contact "$@";;
+    contact) shift; cmd_contact "$@";;   secret) shift; cmd_secret "$@";;
     *) echo "axc: неизвестная команда «$1» (axc help)" >&2; exit 2;;
   esac
 }
