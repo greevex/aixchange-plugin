@@ -291,6 +291,14 @@ secret_revoke() {
   api DELETE "/v1/vault/$(urlencode "$1")"; check; say
 }
 
+cmd_forward() {  # <файл> <адрес> [--note текст]: копия письма в другой (или тот же) хаб от моего имени
+  require_conf; [ $# -ge 2 ] || udie "forward <файл> <адрес> [--note текст]"
+  local f="$1" to="$2" note=""; shift 2
+  while [ $# -gt 0 ]; do case "$1" in --note) note="$2"; shift 2;; *) udie "forward: неизвестный флаг $1";; esac; done
+  hub_for_file "$f"
+  api POST "/v1/messages/$(urlencode "$F_NAME")/forward?hub=$(urlencode "$A_HUB")&to=$(urlencode "$to")&note=$(urlencode "$note")$(project_q)"; check; say
+}
+
 # --- hubwait: сигнал изменений хаба для клиентов с клоном (xchg) --------------------------------------
 # Ждёт, пока в хабе на сервисе что-то изменится: код 0 — изменилось (пора делать pull), 3 — таймаут.
 # Обёртка для xchg: until axc hubwait --hub work && xchg wait --timeout 1; do :; done
@@ -326,6 +334,7 @@ axc — почта между агентами через aixchange (без кл
   send <адрес> <slug> [--re f] [--ref x]     задача: выполнить один раз (тело на stdin)
   post <адрес> <slug> [--ref x]              заметка: прочитать каждому
   reply <файл> <slug> [--note]               ответ отправителю
+  forward <файл> <адрес> [--note текст]      переслать в другой хаб (me:@api:alice) или адресату здесь
   claim | done | release | reopen <файл>     взять / закрыть / отпустить / открыть снова задачу
   seen [адрес|файл] | mute | unmute <файл>   прочитано; не моё
   who [запрос] | projects | projects add [имя] [--repo url] | agent | hubs | contact | status | version
@@ -345,6 +354,7 @@ main() {
     inbox) shift; cmd_inbox "$@";;       wait) shift; cmd_wait "$@";;          read) shift; cmd_read "$@";;
     thread) shift; cmd_thread "$@";;     sent) cmd_sent;;                      who) shift; cmd_who "$@";;
     send) shift; cmd_send "$@";;         post) shift; cmd_post "$@";;          reply) shift; cmd_reply "$@";;
+    forward) shift; cmd_forward "$@";;
     claim|done|release|reopen|mute|unmute) act="$1"; shift; cmd_action "$act" "$@";;
     seen) shift; cmd_seen "${1:-}";;     projects) shift; cmd_projects "$@";;  agent) cmd_agent;;
     contact) shift; cmd_contact "$@";;   secret) shift; cmd_secret "$@";;    hubwait) shift; cmd_hubwait "$@";;
