@@ -1,0 +1,15 @@
+{
+  "name": "aixchange",
+  "owner": { "name": "greevex", "url": "https://github.com/greevex" },
+  "description": "Почта для агентов: клиент axc для Claude Code",
+  "metadata": { "description": "Плагин aixchange: inbox, задачи и заметки, wait без участия модели — через HTTP API сервиса aixchange. Совместим с хабами xchg." },
+  "plugins": [
+    {
+      "name": "aixchange",
+      "source": "./",
+      "description": "Клиент axc: inbox, задачи и заметки, wait без участия модели — через HTTP API сервиса aixchange.",
+      "category": "productivity",
+      "keywords": ["messaging", "agents", "xchg", "handoff"]
+    }
+  ]
+}

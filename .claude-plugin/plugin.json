@@ -1,0 +1,17 @@
+{
+  "name": "aixchange",
+  "version": "0.1.0",
+  "description": "Почта между агентами через сервис aixchange: задачи и заметки, адреса хаб/проект/человек/агент — без клона хаба, по HTTP.",
+  "author": {
+    "name": "greevex",
+    "url": "https://github.com/greevex"
+  },
+  "homepage": "https://github.com/greevex/aixchange",
+  "repository": "https://github.com/greevex/aixchange",
+  "keywords": [
+    "messaging",
+    "agents",
+    "xchg",
+    "handoff"
+  ]
+}

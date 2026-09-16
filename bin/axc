@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# axc — клиент aixchange для агентов без клона хаба: команды xchg поверх HTTP API.
+# Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
+set -euo pipefail
+
+VERSION="0.1.0"
+CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
+CONF="$CONF_DIR/config"
+URL="" TOKEN="" DEFAULT_HUB=""
+OPT_HUB="${AIXCHANGE_HUB:-}"
+STATUS="" BODY=""
+HOOK_EVENT=""
+
+die()  { echo "axc: $*" >&2; exit 1; }
+udie() { echo "axc: $*" >&2; exit 2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# --- конфиг: url, token, default ------------------------------------------------------------
+load_conf() {
+  [ -f "$CONF" ] || return 0
+  local k v
+  while IFS='=' read -r k v || [ -n "$k" ]; do
+    k=$(printf '%s' "$k" | tr -d ' \t\r'); v=$(printf '%s' "${v:-}" | sed 's/^[ \t]*//; s/[ \t\r]*$//')
+    case "$k" in url) URL="$v";; token) TOKEN="$v";; default) DEFAULT_HUB="$v";; esac
+  done < "$CONF"
+  return 0
+}
+require_conf() { [ -n "$URL" ] && [ -n "$TOKEN" ] || die "не подключено: axc connect <url> <токен>"; }
+write_conf() {  # <url> <token> <default>
+  mkdir -p "$CONF_DIR"; umask 077
+  { echo "# aixchange — подключение к сервису (не в git)"; echo "url = $1"; echo "token = $2"; [ -z "$3" ] || echo "default = $3"; } > "$CONF"
+  chmod 600 "$CONF" 2>/dev/null || true
+}
+
+# --- HTTP -------------------------------------------------------------------------------------
+urlencode() {
+  local LC_ALL=C s="$1" out="" i c
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in [a-zA-Z0-9.~_-]) out+="$c";; *) out+=$(printf '%%%02X' "$(( $(printf '%d' "'$c") & 255 ))");; esac
+  done
+  printf '%s' "$out"
+}
+# api <метод> <путь с query> [аргументы curl...] → BODY, STATUS
+api() {
+  local method="$1" path="$2" out; shift 2
+  out=$(curl -sS -X "$method" -H "Authorization: Bearer $TOKEN" -H "Accept: text/plain" -w '\n%{http_code}' "$@" "$URL$path") \
+    || die "нет связи с $URL"
+  STATUS="${out##*$'\n'}"; BODY="${out%$'\n'*}"
+  [ "$out" = "$STATUS" ] && BODY=""
+  return 0
+}
+check() { case "$STATUS" in 2*) return 0;; *) [ -n "$BODY" ] && printf '%s\n' "$BODY" >&2 || echo "axc: HTTP $STATUS" >&2; exit 1;; esac; }
+say()   { [ -z "$BODY" ] || printf '%s\n' "$BODY"; }
+
+# --- хаб и проект сессии -------------------------------------------------------------------------
+HUBS=""
+hubs_list() { [ -n "$HUBS" ] && return 0; api GET /v1/hubs; check; HUBS=$(printf '%s\n' "$BODY" | awk 'NF {print $1}'); return 0; }
+is_hub() { hubs_list; printf '%s\n' "$HUBS" | grep -qx -- "$1"; }
+hub_count() { hubs_list; printf '%s\n' "$HUBS" | grep -c . || true; }
+# split_addr <адрес> → A_HUB, A_ADDR: префикс хаба отделяется, если это известный хаб
+A_HUB="" A_ADDR=""
+split_addr() {
+  local spec="$1" first="${1%%:*}"
+  A_HUB="" A_ADDR="$spec"
+  if [ "$first" != "$spec" ] && is_hub "$first"; then A_HUB="$first"; A_ADDR="${spec#*:}"; fi
+  [ -n "$A_HUB" ] || A_HUB="$OPT_HUB"
+  [ -n "$A_HUB" ] || A_HUB="$DEFAULT_HUB"
+  if [ -z "$A_HUB" ]; then
+    if [ "$(hub_count)" = 1 ]; then A_HUB="$HUBS"; else die "несколько хабов ($(printf '%s' "$HUBS" | tr '\n' ' ')): укажи префикс, например ${HUBS%%$'\n'*}:$spec, или default в $CONF"; fi
+  fi
+}
+# hub_for_file <файл> → A_HUB и F_NAME: «хаб:путь», путь или имя
+F_NAME=""
+hub_for_file() {
+  local spec="$1" first="${1%%:*}"
+  A_HUB="" F_NAME="$spec"
+  if [ "$first" != "$spec" ] && is_hub "$first"; then A_HUB="$first"; F_NAME="${spec#*:}"; fi
+  F_NAME="${F_NAME##*/}"
+  [ -n "$A_HUB" ] || A_HUB="$OPT_HUB"
+  [ -n "$A_HUB" ] || A_HUB="$DEFAULT_HUB"
+  if [ -z "$A_HUB" ]; then
+    if [ "$(hub_count)" = 1 ]; then A_HUB="$HUBS"; else die "несколько хабов: укажи файл как <хаб>:<имя> или default в $CONF"; fi
+  fi
+}
+repo_root() { local common; common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1; common=$(cd "$common" 2>/dev/null && pwd -P) || return 1; dirname "$common"; }
+cur_project() {
+  local root o; root=$(repo_root) || return 0
+  o=$(git -C "$root" config --get xchg.project 2>/dev/null || true)
+  [ -n "$o" ] || o=$(git -C "$root" config --get aixchange.project 2>/dev/null || true)
+  echo "${o:-$(basename "$root")}"
+}
+project_norm() { printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C sed 's/[^a-z0-9._-]/-/g; s/--*/-/g; s/^-//; s/-$//'; }
+project_q() { local p; p=$(cur_project); [ -n "$p" ] && printf '&project=%s' "$(urlencode "$p")" || true; }
+hub_q() { [ -n "${1:-}" ] && printf '&hub=%s' "$(urlencode "$1")" || true; }
+read_hook_input() {  # хук Claude Code подаёт JSON на stdin
+  [ -t 0 ] && return 0
+  local j=""; IFS= read -r -t 1 -d '' j || true
+  HOOK_EVENT=$(printf '%s' "$j" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  return 0
+}
+
+# --- команды ------------------------------------------------------------------------------------
+cmd_connect() {
+  local url="${1:-}" token="" code="" name="" def=""
+  [ -n "$url" ] || udie "connect <url> <токен> | connect <url> --code ABCD-1234 [--name устройство] [--default хаб]"
+  shift
+  case "${1:-}" in --*|"") ;; *) token="$1"; shift;; esac
+  while [ $# -gt 0 ]; do case "$1" in
+    --code) code="$2"; shift 2;; --name) name="$2"; shift 2;; --default) def="$2"; shift 2;;
+    *) udie "connect: неизвестный флаг $1";; esac; done
+  url="${url%/}"; URL="$url"
+  if [ -n "$code" ]; then
+    [ -n "$name" ] || name="$(hostname 2>/dev/null || echo agent)"
+    TOKEN="none"
+    api POST "/v1/pair?code=$(urlencode "$code")&device_name=$(urlencode "$name")"; check
+    token="${BODY%%$'\n'*}"
+  fi
+  [ -n "$token" ] || udie "нужен токен или --code"
+  TOKEN="$token"
+  api GET /v1/me; check
+  write_conf "$url" "$token" "$def"
+  echo "подключено: $url"; say
+  echo "конфиг: $CONF"
+}
+cmd_status() {
+  echo "axc $VERSION; конфиг $CONF; url ${URL:-—}; default ${DEFAULT_HUB:-—}; проект здесь: $(cur_project 2>/dev/null || echo —)"
+  [ -n "$URL" ] && [ -n "$TOKEN" ] || return 0
+  api GET /v1/me; check; say
+}
+cmd_hubs() { require_conf; api GET /v1/hubs; check; say; }
+cmd_agent() { require_conf; local p; p=$(cur_project); [ -n "$p" ] || die "не в git-репозитории: агент — это человек × проект"
+  api GET "/v1/agent?project=$(urlencode "$p")$(hub_q "$OPT_HUB")"; check; say; }
+cmd_inbox() {
+  require_conf; local brief=0 q=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --brief) brief=1; shift;; --all) q="$q&all=1"; shift;; --history) q="$q&history=1"; shift;;
+    --max-age) shift 2;; --hub) OPT_HUB="$2"; shift 2;;
+    *) udie "inbox [--brief] [--all] [--history] [--hub H]";; esac; done
+  if [ "$brief" = 1 ]; then
+    read_hook_input
+    if [ "$HOOK_EVENT" = SessionStart ]; then q="$q&scope=open"; else q="$q&scope=new"; fi
+  fi
+  api GET "/v1/inbox?x=1$q$(project_q)$(hub_q "$OPT_HUB")"
+  case "$STATUS" in 204) return 0;; esac
+  check; say
+}
+cmd_wait() {
+  require_conf; local timeout=0 q=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --timeout) timeout="$2"; shift 2;; --interval) shift 2;; --all) q="$q&all=1"; shift;; --hub) OPT_HUB="$2"; shift 2;;
+    *) udie "wait [--timeout сек] [--hub H]";; esac; done
+  [[ "$timeout" =~ ^[0-9]+$ ]] || udie "wait: --timeout — целые секунды"
+  local left="$timeout"; [ "$left" -gt 0 ] || left=7200
+  local start; start=$(date +%s)
+  while :; do
+    local chunk="$left"; [ "$chunk" -gt 3600 ] && chunk=3600
+    api GET "/v1/inbox/wait?timeout=$chunk$q$(project_q)$(hub_q "$OPT_HUB")" --max-time $((chunk + 30))
+    case "$STATUS" in
+      200) say; return 0;;
+      204) ;;
+      *) check;;
+    esac
+    if [ "$timeout" -gt 0 ]; then
+      left=$(( start + timeout - $(date +%s) ))
+      [ "$left" -gt 0 ] || { echo "axc: за ${timeout} с новых сообщений нет" >&2; exit 3; }
+    fi
+  done
+}
+cmd_read()   { require_conf; [ -n "${1:-}" ] || udie "read <файл>"; hub_for_file "$1"; api GET "/v1/messages/$(urlencode "$F_NAME")?hub=$(urlencode "$A_HUB")" -H 'Accept: text/markdown'; check; say; }
+cmd_thread() { require_conf; [ -n "${1:-}" ] || udie "thread <файл>"; hub_for_file "$1"; api GET "/v1/messages/$(urlencode "$F_NAME")/thread?hub=$(urlencode "$A_HUB")"; check; say; }
+cmd_sent()   { require_conf; local h; for h in ${OPT_HUB:-$(hubs_list; echo "$HUBS")}; do api GET "/v1/hubs/$(urlencode "$h")/sent"; check; say; done; }
+cmd_who() {
+  require_conf; local q=""
+  while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) q="$1"; shift;; esac; done
+  local h; for h in ${OPT_HUB:-$(hubs_list; echo "$HUBS")}; do api GET "/v1/hubs/$(urlencode "$h")/who?q=$(urlencode "$q")"; check; say; done
+}
+send_common() {  # <kind> <адрес> <slug> [--re f] [--ref x]
+  local kind="$1" to="$2" slug="$3"; shift 3; local re="" ref=""
+  while [ $# -gt 0 ]; do case "$1" in --re) re="${2##*/}"; shift 2;; --ref) ref="$2"; shift 2;; *) udie "неизвестный флаг $1";; esac; done
+  [ -t 0 ] && udie "тело письма ожидается на stdin"
+  split_addr "$to"
+  api POST "/v1/hubs/$(urlencode "$A_HUB")/messages?to=$(urlencode "$A_ADDR")&slug=$(urlencode "$slug")&kind=$kind&re=$(urlencode "$re")&ref=$(urlencode "$ref")$(project_q)" \
+    -H 'Content-Type: text/markdown' --data-binary @-
+  check; say
+}
+cmd_send()  { require_conf; [ $# -ge 2 ] || udie "send <адрес> <slug> [--re файл] [--ref куда] < тело"; send_common task "$@"; }
+cmd_post()  { require_conf; [ $# -ge 2 ] || udie "post <адрес> <slug> [--re файл] [--ref куда] < тело"; send_common note "$@"; }
+cmd_reply() {
+  require_conf; [ $# -ge 2 ] || udie "reply <файл> <slug> [--note] < тело"
+  local src="$1" slug="$2" kind=task; shift 2
+  while [ $# -gt 0 ]; do case "$1" in --note) kind=note; shift;; --task) kind=task; shift;; *) udie "reply: неизвестный флаг $1";; esac; done
+  [ -t 0 ] && udie "reply: тело ответа ожидается на stdin"
+  hub_for_file "$src"
+  api POST "/v1/messages/$(urlencode "$F_NAME")/reply?hub=$(urlencode "$A_HUB")&slug=$(urlencode "$slug")&kind=$kind$(project_q)" -H 'Content-Type: text/markdown' --data-binary @-
+  check; say
+}
+cmd_action() {  # <действие> <файл>...
+  require_conf; local act="$1"; shift; [ $# -ge 1 ] || udie "$act <файл>"
+  local f; for f in "$@"; do hub_for_file "$f"; api POST "/v1/messages/$(urlencode "$F_NAME")/$act?hub=$(urlencode "$A_HUB")$(project_q)"; check; say; done
+}
+cmd_seen() {
+  require_conf; local target="${1:-}"
+  if [ -z "$target" ]; then
+    local h; for h in ${OPT_HUB:-$(hubs_list; echo "$HUBS")}; do api POST "/v1/seen?hub=$(urlencode "$h")$(project_q)"; check; say; done; return 0
+  fi
+  case "$target" in *.md) cmd_action seen "$target";; *) split_addr "$target"; api POST "/v1/seen?hub=$(urlencode "$A_HUB")&addr=$(urlencode "$A_ADDR")$(project_q)"; check; say;; esac
+}
+cmd_projects() {
+  require_conf
+  if [ "${1:-}" = add ]; then shift; cmd_project_add "$@"; return $?; fi
+  while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) udie "projects [--hub H] | projects add <имя> [--repo <где код>] [--owner login] [--docs путь] [--hub H]";; esac; done
+  local h p; p=$(cur_project)
+  for h in ${OPT_HUB:-$(hubs_list; echo "$HUBS")}; do api GET "/v1/hubs/$(urlencode "$h")/projects?project=$(urlencode "$p")"; check; say; done
+}
+cmd_project_add() {
+  local name="${1:-}" repo="" owner="" docs=""
+  case "$name" in --*|"") name="";; *) shift;; esac
+  while [ $# -gt 0 ]; do case "$1" in --repo) repo="$2"; shift 2;; --owner) owner="$2"; shift 2;; --docs) docs="$2"; shift 2;; --hub) OPT_HUB="$2"; shift 2;; *) udie "projects add <имя> [--repo <где код>] [--owner login] [--docs путь] [--hub H]";; esac; done
+  local from_repo=0 root
+  [ -n "$name" ] || { name=$(cur_project); from_repo=1; }
+  [ -n "$name" ] || udie "projects add: не в git-репозитории — укажи имя проекта"
+  if ! [[ "$name" =~ ^[a-z0-9._-]+$ ]]; then
+    [ "$from_repo" = 1 ] && udie "имя репозитория «$name» не годится для проекта (нужно [a-z0-9._-]): axc projects add $(project_norm "$name")"
+    udie "имя проекта из [a-z0-9._-], например: axc projects add $(project_norm "$name")"
+  fi
+  if [ "$from_repo" = 0 ] && root=$(repo_root) && ! git -C "$root" config --get xchg.project >/dev/null 2>&1 && ! [[ "$(basename "$root")" =~ ^[a-z0-9._-]+$ ]]; then
+    git -C "$root" config xchg.project "$name"; echo "репозиторий $(basename "$root") теперь проект «$name» (git config xchg.project)"
+  fi
+  [ -n "$repo" ] || repo=$(git remote get-url origin 2>/dev/null || true)
+  if [ -z "$docs" ]; then local d; for d in .claude-docs/index.md CLAUDE.md README.md; do [ -f "$d" ] && { docs="$d"; break; }; done; fi
+  local h="${OPT_HUB:-$DEFAULT_HUB}"
+  if [ -z "$h" ]; then [ "$(hub_count)" = 1 ] && h="$HUBS" || die "несколько хабов: укажи --hub"; fi
+  api POST "/v1/hubs/$(urlencode "$h")/projects?name=$(urlencode "$name")&repo_url=$(urlencode "$repo")&owner=$(urlencode "$owner")&docs_entry=$(urlencode "$docs")"
+  check; say
+}
+cmd_contact() {
+  require_conf; local name="" aliases="" contact=""
+  while [ $# -gt 0 ]; do case "$1" in --name) name="$2"; shift 2;; --aliases) aliases="$2"; shift 2;; --contact) contact="$2"; shift 2;; --hub) OPT_HUB="$2"; shift 2;; *) udie "contact [--name N] [--aliases «a, b»] [--contact C] [--hub H]";; esac; done
+  local h="${OPT_HUB:-$DEFAULT_HUB}"
+  if [ -z "$h" ]; then [ "$(hub_count)" = 1 ] && h="$HUBS" || die "несколько хабов: укажи --hub"; fi
+  local json; json=$(printf '{"name":"%s","aliases":"%s","contact":"%s"}' "$(json_esc "$name")" "$(json_esc "$aliases")" "$(json_esc "$contact")")
+  api PATCH "/v1/hubs/$(urlencode "$h")/me" -H 'Content-Type: application/json' --data-binary "$json"; check; say
+}
+json_esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+cmd_help() { cat <<'H'
+axc — почта между агентами через aixchange (без клона хаба, по HTTP)
+
+Адрес: [хаб:]часть[:часть] — all | @проект | человек | @проект:человек (порядок частей не важен)
+
+  connect <url> <токен> [--default хаб]     подключиться к сервису
+  inbox [--brief] [--all] [--history]        что мне пришло (--brief — режим хука: только новое, пусто = 0 байт)
+  wait [--timeout сек]                       ждать нового письма без участия модели (0 — пришло, 3 — таймаут)
+  read <файл> | thread <файл> | sent         прочитать; переписка; мои открытые письма
+  send <адрес> <slug> [--re f] [--ref x]     задача: выполнить один раз (тело на stdin)
+  post <адрес> <slug> [--ref x]              заметка: прочитать каждому
+  reply <файл> <slug> [--note]               ответ отправителю
+  claim | done | release | reopen <файл>     взять / закрыть / отпустить / открыть снова задачу
+  seen [адрес|файл] | mute | unmute <файл>   прочитано; не моё
+  who [запрос] | projects | projects add [имя] [--repo url] | agent | hubs | contact | status | version
+H
+}
+
+main() {
+  case "${1:-help}" in help|-h|--help) cmd_help; exit 0;; version) echo "axc $VERSION"; exit 0;; esac
+  load_conf
+  case "${1:-}" in
+    connect) shift; cmd_connect "$@";;   status) cmd_status;;                 hubs) cmd_hubs;;
+    inbox) shift; cmd_inbox "$@";;       wait) shift; cmd_wait "$@";;          read) shift; cmd_read "$@";;
+    thread) shift; cmd_thread "$@";;     sent) cmd_sent;;                      who) shift; cmd_who "$@";;
+    send) shift; cmd_send "$@";;         post) shift; cmd_post "$@";;          reply) shift; cmd_reply "$@";;
+    claim|done|release|reopen|mute|unmute) act="$1"; shift; cmd_action "$act" "$@";;
+    seen) shift; cmd_seen "${1:-}";;     projects) shift; cmd_projects "$@";;  agent) cmd_agent;;
+    contact) shift; cmd_contact "$@";;
+    *) echo "axc: неизвестная команда «$1» (axc help)" >&2; exit 2;;
+  esac
+}
+main "$@"; exit $?
