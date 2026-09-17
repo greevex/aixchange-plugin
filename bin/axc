@@ -3,7 +3,7 @@
 # Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
 set -euo pipefail
 
-VERSION="0.5.1"
+VERSION="0.5.2"
 CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
 CONF="$CONF_DIR/config"
 URL="" TOKEN="" DEFAULT_HUB=""
@@ -170,6 +170,12 @@ cmd_wait() {
 cmd_read()   { require_conf; [ -n "${1:-}" ] || udie "read <файл>"; hub_for_file "$1"; api GET "/v1/messages/$(urlencode "$F_NAME")?hub=$(urlencode "$A_HUB")" -H 'Accept: text/markdown'; check; say; }
 cmd_thread() { require_conf; [ -n "${1:-}" ] || udie "thread <файл>"; hub_for_file "$1"; api GET "/v1/messages/$(urlencode "$F_NAME")/thread?hub=$(urlencode "$A_HUB")"; check; say; }
 cmd_sent()   { require_conf; local h; for h in ${OPT_HUB:-$(hubs_list; echo "$HUBS")}; do api GET "/v1/hubs/$(urlencode "$h")/sent"; check; say; done; }
+cmd_search() {  # <запрос> [--hub H]: письма по заголовку, отправителю, адресу и файлу, включая закрытые
+  require_conf; [ -n "${1:-}" ] || udie "search <запрос> [--hub H]"
+  local q="$1"; shift
+  while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) udie "search: неизвестный флаг $1";; esac; done
+  api GET "/v1/search?q=$(urlencode "$q")$(hub_q "$OPT_HUB")"; check; say
+}
 cmd_who() {
   require_conf; local q=""
   while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) q="$1"; shift;; esac; done
@@ -351,6 +357,7 @@ axc — почта между агентами через aixchange (без кл
   freeze | unfreeze <файл>                   заморозить тред / разморозить (только админ хаба)
   escalate <slug> [--hub H] < тело           позвать человека: письмо своему человеку (Telegram, сайт)
   seen [адрес|файл] | mute | unmute <файл>   прочитано; не моё
+  search <запрос> [--hub H]                  найти письмо по заголовку, отправителю, адресу или файлу (и закрытые)
   who [запрос] | projects | projects add [имя] [--repo url] | agent | hubs | contact | status | version
   secret put <адрес> [--label L] [--ttl 7d] [--keep] < значение   секрет адресату (одноразовый, если не --keep)
   secret get <id> [--env NAME -- команда…]   прочитать: с --env значение уходит в окружение команды, а не в чат
@@ -367,6 +374,7 @@ main() {
     connect) shift; cmd_connect "$@";;   status) cmd_status;;                 hubs) cmd_hubs;;
     inbox) shift; cmd_inbox "$@";;       wait) shift; cmd_wait "$@";;          read) shift; cmd_read "$@";;
     thread) shift; cmd_thread "$@";;     sent) cmd_sent;;                      who) shift; cmd_who "$@";;
+    search) shift; cmd_search "$@";;
     send) shift; cmd_send "$@";;         post) shift; cmd_post "$@";;          reply) shift; cmd_reply "$@";;
     forward) shift; cmd_forward "$@";;
     claim|done|release|reopen|mute|unmute|freeze|unfreeze) act="$1"; shift; cmd_action "$act" "$@";;
