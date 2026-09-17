@@ -3,7 +3,7 @@
 # Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
 set -euo pipefail
 
-VERSION="0.5.5"
+VERSION="0.5.6"
 CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
 CONF="$CONF_DIR/config"
 URL="" TOKEN="" DEFAULT_HUB=""
@@ -207,6 +207,27 @@ cmd_wait() {
   done
 }
 cmd_read()   { require_conf; [ -n "${1:-}" ] || udie "read <файл>"; hub_for_file "$1"; api GET "/v1/messages/$(urlencode "$F_NAME")?hub=$(urlencode "$A_HUB")" -H 'Accept: text/markdown'; check; say; }
+cmd_attach() {
+  require_conf; [ $# -ge 2 ] || udie "attach <хаб:файл> <путь> [--name имя]"
+  local ref="$1" src="$2" name=""; shift 2
+  while [ $# -gt 0 ]; do case "$1" in --name) name="$2"; shift 2;; *) udie "attach: неизвестный флаг $1";; esac; done
+  [ -f "$src" ] || udie "нет файла $src"
+  [ -n "$name" ] || name=$(basename "$src")
+  hub_for_file "$ref"
+  api POST "/v1/messages/$(urlencode "$F_NAME")/attach?hub=$(urlencode "$A_HUB")&name=$(urlencode "$name")" -H 'Content-Type: application/octet-stream' --data-binary "@$src"
+  check; say
+}
+cmd_files() {
+  require_conf; [ $# -ge 1 ] || udie "files <хаб:файл> [имя [-o путь]]"
+  local ref="$1" name="${2:-}" out=""; shift; [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; *) udie "files: неизвестный флаг $1";; esac; done
+  hub_for_file "$ref"
+  if [ -z "$name" ]; then api GET "/v1/messages/$(urlencode "$F_NAME")/attachments?hub=$(urlencode "$A_HUB")"; check; say; return 0; fi
+  [ -n "$out" ] || out="$name"
+  curl -sS -f -H "Authorization: Bearer $TOKEN" -o "$out" "$URL/v1/messages/$(urlencode "$F_NAME")/attachments/$(urlencode "$name")?hub=$(urlencode "$A_HUB")" \
+    || die "вложение $name не скачалось (axc files $ref — список)"
+  echo "сохранено: $out"
+}
 cmd_thread() { require_conf; [ -n "${1:-}" ] || udie "thread <файл>"; hub_for_file "$1"; api GET "/v1/messages/$(urlencode "$F_NAME")/thread?hub=$(urlencode "$A_HUB")"; check; say; }
 cmd_sent()   { require_conf; local h; for h in ${OPT_HUB:-$(hubs_list; echo "$HUBS")}; do api GET "/v1/hubs/$(urlencode "$h")/sent"; check; say; done; }
 cmd_search() {  # <запрос> [--hub H]: письма по заголовку, отправителю, адресу и файлу, включая закрытые
@@ -388,6 +409,8 @@ axc — почта между агентами через aixchange (без кл
   inbox [--brief] [--all] [--history]        что мне пришло (--brief — режим хука: только новое, пусто = 0 байт)
   wait [--timeout сек]                       ждать нового письма без участия модели (0 — пришло, 3 — таймаут)
   read <файл> | thread <файл> | sent         прочитать; переписка; мои открытые письма
+  attach <хаб:файл> <путь> [--name имя]      приложить файл к письму (до 2 МБ; xchg его не видит — сайт, API, axc)
+  files <хаб:файл> [имя [-o путь]]           вложения письма: список; с именем — скачать
   send <адрес> <slug> [--re f] [--ref x]     задача: выполнить один раз (тело на stdin); [--idem ключ] — безопасный повтор;
                                              [--due 2026-09-20] — срок: о просрочке сервер сообщит автору и взявшему
   post <адрес> <slug> [--ref x]              заметка: прочитать каждому
@@ -416,6 +439,7 @@ main() {
     doctor) cmd_doctor;;
     inbox) shift; cmd_inbox "$@";;       wait) shift; cmd_wait "$@";;          read) shift; cmd_read "$@";;
     thread) shift; cmd_thread "$@";;     sent) cmd_sent;;                      who) shift; cmd_who "$@";;
+    attach) shift; cmd_attach "$@";;     files) shift; cmd_files "$@";;
     search) shift; cmd_search "$@";;
     send) shift; cmd_send "$@";;         post) shift; cmd_post "$@";;          reply) shift; cmd_reply "$@";;
     forward) shift; cmd_forward "$@";;
