@@ -3,7 +3,7 @@
 # Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
 set -euo pipefail
 
-VERSION="0.5.4"
+VERSION="0.5.5"
 CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
 CONF="$CONF_DIR/config"
 URL="" TOKEN="" DEFAULT_HUB=""
@@ -221,15 +221,15 @@ cmd_who() {
   local h; for h in ${OPT_HUB:-$(hubs_list; echo "$HUBS")}; do api GET "/v1/hubs/$(urlencode "$h")/who?q=$(urlencode "$q")"; check; say; done
 }
 send_common() {  # <kind> <адрес> <slug> [--re f] [--ref x] [--idem ключ]
-  local kind="$1" to="$2" slug="$3"; shift 3; local re="" ref="" idem=""
-  while [ $# -gt 0 ]; do case "$1" in --re) re="${2##*/}"; shift 2;; --ref) ref="$2"; shift 2;; --idem) idem="$2"; shift 2;; *) udie "неизвестный флаг $1";; esac; done
+  local kind="$1" to="$2" slug="$3"; shift 3; local re="" ref="" idem="" due=""
+  while [ $# -gt 0 ]; do case "$1" in --re) re="${2##*/}"; shift 2;; --ref) ref="$2"; shift 2;; --idem) idem="$2"; shift 2;; --due) due="$2"; shift 2;; *) udie "неизвестный флаг $1";; esac; done
   [ -t 0 ] && udie "тело письма ожидается на stdin"
   split_addr "$to"
-  api POST "/v1/hubs/$(urlencode "$A_HUB")/messages?to=$(urlencode "$A_ADDR")&slug=$(urlencode "$slug")&kind=$kind&re=$(urlencode "$re")&ref=$(urlencode "$ref")$(project_q)" \
+  api POST "/v1/hubs/$(urlencode "$A_HUB")/messages?to=$(urlencode "$A_ADDR")&slug=$(urlencode "$slug")&kind=$kind&re=$(urlencode "$re")&ref=$(urlencode "$ref")&due=$(urlencode "$due")$(project_q)" \
     -H 'Content-Type: text/markdown' -H "Idempotency-Key: $idem" --data-binary @-
   check; say
 }
-cmd_send()  { require_conf; [ $# -ge 2 ] || udie "send <адрес> <slug> [--re файл] [--ref куда] < тело"; send_common task "$@"; }
+cmd_send()  { require_conf; [ $# -ge 2 ] || udie "send <адрес> <slug> [--re файл] [--ref куда] [--due YYYY-MM-DD] < тело"; send_common task "$@"; }
 cmd_post()  { require_conf; [ $# -ge 2 ] || udie "post <адрес> <slug> [--re файл] [--ref куда] < тело"; send_common note "$@"; }
 cmd_reply() {
   require_conf; [ $# -ge 2 ] || udie "reply <файл> <slug> [--note] < тело"
@@ -388,7 +388,8 @@ axc — почта между агентами через aixchange (без кл
   inbox [--brief] [--all] [--history]        что мне пришло (--brief — режим хука: только новое, пусто = 0 байт)
   wait [--timeout сек]                       ждать нового письма без участия модели (0 — пришло, 3 — таймаут)
   read <файл> | thread <файл> | sent         прочитать; переписка; мои открытые письма
-  send <адрес> <slug> [--re f] [--ref x]     задача: выполнить один раз (тело на stdin); [--idem ключ] — безопасный повтор
+  send <адрес> <slug> [--re f] [--ref x]     задача: выполнить один раз (тело на stdin); [--idem ключ] — безопасный повтор;
+                                             [--due 2026-09-20] — срок: о просрочке сервер сообщит автору и взявшему
   post <адрес> <slug> [--ref x]              заметка: прочитать каждому
   reply <файл> <slug> [--note]               ответ отправителю
   forward <файл> <адрес> [--note текст]      переслать в другой хаб (me:@api:alice) или адресату здесь
