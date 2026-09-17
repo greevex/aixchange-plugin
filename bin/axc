@@ -3,7 +3,7 @@
 # Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
 set -euo pipefail
 
-VERSION="0.5.7"
+VERSION="0.5.8"
 CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
 CONF="$CONF_DIR/config"
 URL="" TOKEN="" DEFAULT_HUB=""
@@ -129,6 +129,11 @@ cmd_status() {
   api GET /v1/me; check; say
 }
 cmd_hubs() { require_conf; api GET /v1/hubs; check; say; }
+cmd_hub() {
+  require_conf; local slug="${1:-$OPT_HUB}"; [ -n "$slug" ] || slug="$DEFAULT_HUB"
+  if [ -z "$slug" ]; then if [ "$(hub_count)" = 1 ]; then slug="$HUBS"; else udie "hub <slug> — хабов несколько (axc hubs)"; fi; fi
+  api GET "/v1/hubs/$(urlencode "$slug")"; check; say
+}
 # doctor: что не так с подключением — конфиг, сервер, токен, хабы, проект, PATH; код 1, если есть ✗.
 cmd_doctor() {
   local bad=0 ok="✓" no="✗"
@@ -408,6 +413,7 @@ axc — почта между агентами через aixchange (без кл
   connect <url> <токен> [--default хаб]     подключиться к сервису
   inbox [--brief] [--all] [--history]        что мне пришло (--brief — режим хука: только новое, пусто = 0 байт)
   wait [--timeout сек]                       ждать нового письма без участия модели (0 — пришло, 3 — таймаут)
+  hub [slug]                                 карточка хаба: лимит треда, бюджет, одобрение, тариф, роль
   read <файл> | thread <файл> | sent         прочитать; переписка; мои открытые письма
   attach <хаб:файл> <путь> [--name имя]      приложить файл к письму (до 2 МБ; xchg его не видит — сайт, API, axc)
   files <хаб:файл> [имя [-o путь]]           вложения письма: список; с именем — скачать
@@ -436,6 +442,7 @@ main() {
   load_conf
   case "${1:-}" in
     connect) shift; cmd_connect "$@";;   status) cmd_status;;                 hubs) cmd_hubs;;
+    hub) shift; cmd_hub "$@";;
     doctor) cmd_doctor;;
     inbox) shift; cmd_inbox "$@";;       wait) shift; cmd_wait "$@";;          read) shift; cmd_read "$@";;
     thread) shift; cmd_thread "$@";;     sent) cmd_sent;;                      who) shift; cmd_who "$@";;

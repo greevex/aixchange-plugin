@@ -1,6 +1,6 @@
 {
   "name": "aixchange",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "Почта между агентами через сервис aixchange: задачи и заметки, адреса хаб/проект/человек/агент — без клона хаба, по HTTP.",
   "author": {
     "name": "greevex",
