@@ -3,7 +3,7 @@
 # Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
 set -euo pipefail
 
-VERSION="0.5.2"
+VERSION="0.5.3"
 CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
 CONF="$CONF_DIR/config"
 URL="" TOKEN="" DEFAULT_HUB=""
@@ -129,6 +129,41 @@ cmd_status() {
   api GET /v1/me; check; say
 }
 cmd_hubs() { require_conf; api GET /v1/hubs; check; say; }
+# doctor: что не так с подключением — конфиг, сервер, токен, хабы, проект, PATH; код 1, если есть ✗.
+cmd_doctor() {
+  local bad=0 ok="✓" no="✗"
+  echo "axc $VERSION · конфиг $CONF"
+  if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
+    echo "$no не подключено: axc connect <url> <токен>  или  curl -fsSL <url>/pair/КОД/setup.sh | bash"; exit 1
+  fi
+  echo "$ok сервер $URL"
+  local code; code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$URL/healthz" 2>/dev/null || echo 000)
+  if [ "$code" = "200" ]; then echo "$ok связь: healthz 200"; else echo "$no нет связи с $URL (healthz $code): проверь адрес и сеть"; exit 1; fi
+  api GET /v1/me
+  case "$STATUS" in
+    2*) echo "$ok токен: $(printf '%s' "$BODY" | head -1)";;
+    401) echo "$no токен не принят (отозван?): выдай новый на странице «Устройства» и axc connect"; bad=1;;
+    *) echo "$no /v1/me: HTTP $STATUS $BODY"; bad=1;;
+  esac
+  api GET /v1/hubs
+  if [ "$STATUS" = "200" ] && [ -n "$BODY" ]; then
+    echo "$ok хабы:"; printf '%s\n' "$BODY" | sed 's/^/    /'
+    [ -n "$DEFAULT_HUB" ] && echo "$ok хаб по умолчанию: $DEFAULT_HUB" || { [ "$(printf '%s\n' "$BODY" | grep -c .)" -gt 1 ] && echo "· хабов несколько, default не задан: адреса и файлы с префиксом хаб: (axc connect … --default work)" || true; }
+  else
+    echo "$no хабов нет: тебя ещё никуда не пригласили"; bad=1
+  fi
+  local root p; root=$(repo_root 2>/dev/null || true)
+  if [ -n "$root" ]; then
+    p=$(cur_project); echo "$ok репозиторий $root → проект «$p»"
+    api GET "/v1/agent?project=$(urlencode "$p")$(hub_q "$OPT_HUB")"
+    if [ "$STATUS" = "200" ]; then echo "$ok агент: $(printf '%s' "$BODY" | head -1)"; else echo "$no проект «$p» не заведён в хабе: axc projects add"; bad=1; fi
+  else
+    echo "· не в git-репозитории: агент = человек × проект; зайди в репозиторий и axc projects add"
+  fi
+  local self; self=$(cd "$(dirname "$0")" && pwd)
+  case ":$PATH:" in *":$self:"*) echo "$ok axc в PATH ($self)";; *) echo "· axc не в PATH: export PATH=\"$self:\$PATH\" (хукам плагина PATH не нужен)";; esac
+  [ "$bad" = 0 ] && echo "всё в порядке" || exit 1
+}
 cmd_agent() { require_conf; local p; p=$(cur_project); [ -n "$p" ] || die "не в git-репозитории: агент — это человек × проект"
   api GET "/v1/agent?project=$(urlencode "$p")$(hub_q "$OPT_HUB")"; check; say; }
 cmd_inbox() {
@@ -359,6 +394,7 @@ axc — почта между агентами через aixchange (без кл
   seen [адрес|файл] | mute | unmute <файл>   прочитано; не моё
   search <запрос> [--hub H]                  найти письмо по заголовку, отправителю, адресу или файлу (и закрытые)
   who [запрос] | projects | projects add [имя] [--repo url] | agent | hubs | contact | status | version
+  doctor                                     что не так с подключением: сервер, токен, хабы, проект, PATH
   secret put <адрес> [--label L] [--ttl 7d] [--keep] < значение   секрет адресату (одноразовый, если не --keep)
   secret get <id> [--env NAME -- команда…]   прочитать: с --env значение уходит в окружение команды, а не в чат
   secret list [--hub H] | secret revoke <id>  мои и адресованные мне; отозвать
@@ -372,6 +408,7 @@ main() {
   load_conf
   case "${1:-}" in
     connect) shift; cmd_connect "$@";;   status) cmd_status;;                 hubs) cmd_hubs;;
+    doctor) cmd_doctor;;
     inbox) shift; cmd_inbox "$@";;       wait) shift; cmd_wait "$@";;          read) shift; cmd_read "$@";;
     thread) shift; cmd_thread "$@";;     sent) cmd_sent;;                      who) shift; cmd_who "$@";;
     search) shift; cmd_search "$@";;
