@@ -3,7 +3,7 @@
 # Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
 set -euo pipefail
 
-VERSION="0.5.3"
+VERSION="0.5.4"
 CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
 CONF="$CONF_DIR/config"
 URL="" TOKEN="" DEFAULT_HUB=""
@@ -162,6 +162,10 @@ cmd_doctor() {
   fi
   local self; self=$(cd "$(dirname "$0")" && pwd)
   case ":$PATH:" in *":$self:"*) echo "$ok axc в PATH ($self)";; *) echo "· axc не в PATH: export PATH=\"$self:\$PATH\" (хукам плагина PATH не нужен)";; esac
+  local srv; srv=$(curl -sS --max-time 10 "$URL/axc" 2>/dev/null | sed -n 's/^VERSION="\([^"]*\)"$/\1/p' | head -1)
+  if [ -z "$srv" ]; then echo "· версия клиента на сервере не прочиталась ($URL/axc)"
+  elif [ "$srv" = "$VERSION" ]; then echo "$ok клиент $VERSION — как на сервере"
+  else echo "· клиент $VERSION, на сервере $srv — обнови: curl -fsSL $URL/axc -o \"$self/axc\" && chmod +x \"$self/axc\" (плагин Claude Code обновляется через /plugin)"; fi
   [ "$bad" = 0 ] && echo "всё в порядке" || exit 1
 }
 cmd_agent() { require_conf; local p; p=$(cur_project); [ -n "$p" ] || die "не в git-репозитории: агент — это человек × проект"
