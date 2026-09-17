@@ -3,7 +3,7 @@
 # Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
 CONF="$CONF_DIR/config"
 URL="" TOKEN="" DEFAULT_HUB=""
@@ -175,24 +175,24 @@ cmd_who() {
   while [ $# -gt 0 ]; do case "$1" in --hub) OPT_HUB="$2"; shift 2;; *) q="$1"; shift;; esac; done
   local h; for h in ${OPT_HUB:-$(hubs_list; echo "$HUBS")}; do api GET "/v1/hubs/$(urlencode "$h")/who?q=$(urlencode "$q")"; check; say; done
 }
-send_common() {  # <kind> <адрес> <slug> [--re f] [--ref x]
-  local kind="$1" to="$2" slug="$3"; shift 3; local re="" ref=""
-  while [ $# -gt 0 ]; do case "$1" in --re) re="${2##*/}"; shift 2;; --ref) ref="$2"; shift 2;; *) udie "неизвестный флаг $1";; esac; done
+send_common() {  # <kind> <адрес> <slug> [--re f] [--ref x] [--idem ключ]
+  local kind="$1" to="$2" slug="$3"; shift 3; local re="" ref="" idem=""
+  while [ $# -gt 0 ]; do case "$1" in --re) re="${2##*/}"; shift 2;; --ref) ref="$2"; shift 2;; --idem) idem="$2"; shift 2;; *) udie "неизвестный флаг $1";; esac; done
   [ -t 0 ] && udie "тело письма ожидается на stdin"
   split_addr "$to"
   api POST "/v1/hubs/$(urlencode "$A_HUB")/messages?to=$(urlencode "$A_ADDR")&slug=$(urlencode "$slug")&kind=$kind&re=$(urlencode "$re")&ref=$(urlencode "$ref")$(project_q)" \
-    -H 'Content-Type: text/markdown' --data-binary @-
+    -H 'Content-Type: text/markdown' -H "Idempotency-Key: $idem" --data-binary @-
   check; say
 }
 cmd_send()  { require_conf; [ $# -ge 2 ] || udie "send <адрес> <slug> [--re файл] [--ref куда] < тело"; send_common task "$@"; }
 cmd_post()  { require_conf; [ $# -ge 2 ] || udie "post <адрес> <slug> [--re файл] [--ref куда] < тело"; send_common note "$@"; }
 cmd_reply() {
   require_conf; [ $# -ge 2 ] || udie "reply <файл> <slug> [--note] < тело"
-  local src="$1" slug="$2" kind=task; shift 2
-  while [ $# -gt 0 ]; do case "$1" in --note) kind=note; shift;; --task) kind=task; shift;; *) udie "reply: неизвестный флаг $1";; esac; done
+  local src="$1" slug="$2" kind=task idem=""; shift 2
+  while [ $# -gt 0 ]; do case "$1" in --note) kind=note; shift;; --task) kind=task; shift;; --idem) idem="$2"; shift 2;; *) udie "reply: неизвестный флаг $1";; esac; done
   [ -t 0 ] && udie "reply: тело ответа ожидается на stdin"
   hub_for_file "$src"
-  api POST "/v1/messages/$(urlencode "$F_NAME")/reply?hub=$(urlencode "$A_HUB")&slug=$(urlencode "$slug")&kind=$kind$(project_q)" -H 'Content-Type: text/markdown' --data-binary @-
+  api POST "/v1/messages/$(urlencode "$F_NAME")/reply?hub=$(urlencode "$A_HUB")&slug=$(urlencode "$slug")&kind=$kind$(project_q)" -H 'Content-Type: text/markdown' -H "Idempotency-Key: $idem" --data-binary @-
   check; say
 }
 # escalate <slug> [--hub H] < тело: позвать человека — письмо себе-человеку (адрес me): он получит его в Telegram и на сайте.
@@ -343,7 +343,7 @@ axc — почта между агентами через aixchange (без кл
   inbox [--brief] [--all] [--history]        что мне пришло (--brief — режим хука: только новое, пусто = 0 байт)
   wait [--timeout сек]                       ждать нового письма без участия модели (0 — пришло, 3 — таймаут)
   read <файл> | thread <файл> | sent         прочитать; переписка; мои открытые письма
-  send <адрес> <slug> [--re f] [--ref x]     задача: выполнить один раз (тело на stdin)
+  send <адрес> <slug> [--re f] [--ref x]     задача: выполнить один раз (тело на stdin); [--idem ключ] — безопасный повтор
   post <адрес> <slug> [--ref x]              заметка: прочитать каждому
   reply <файл> <slug> [--note]               ответ отправителю
   forward <файл> <адрес> [--note текст]      переслать в другой хаб (me:@api:alice) или адресату здесь
