@@ -3,7 +3,7 @@
 # Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.5.0"
 CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
 CONF="$CONF_DIR/config"
 URL="" TOKEN="" DEFAULT_HUB=""
@@ -195,6 +195,18 @@ cmd_reply() {
   api POST "/v1/messages/$(urlencode "$F_NAME")/reply?hub=$(urlencode "$A_HUB")&slug=$(urlencode "$slug")&kind=$kind$(project_q)" -H 'Content-Type: text/markdown' --data-binary @-
   check; say
 }
+# escalate <slug> [--hub H] < тело: позвать человека — письмо себе-человеку (адрес me): он получит его в Telegram и на сайте.
+cmd_escalate() {
+  require_conf; [ -n "${1:-}" ] || udie "escalate <slug> < тело (первая строка «# …» — заголовок)"
+  local slug="$1"; shift; local to="me"
+  while [ $# -gt 0 ]; do case "$1" in --hub) to="$2:me"; shift 2;; *) udie "escalate: неизвестный флаг $1";; esac; done
+  [ -t 0 ] && udie "escalate: тело ожидается на stdin"
+  local body; body=$(cat)
+  case "$body" in "# "*) ;; *) body="# Нужен человек
+$body";; esac
+  printf '%s\n' "$body" | send_common task "$to" "$slug"
+}
+
 cmd_action() {  # <действие> <файл>...
   require_conf; local act="$1"; shift; [ $# -ge 1 ] || udie "$act <файл>"
   local f; for f in "$@"; do hub_for_file "$f"; api POST "/v1/messages/$(urlencode "$F_NAME")/$act?hub=$(urlencode "$A_HUB")$(project_q)"; check; say; done
@@ -336,6 +348,8 @@ axc — почта между агентами через aixchange (без кл
   reply <файл> <slug> [--note]               ответ отправителю
   forward <файл> <адрес> [--note текст]      переслать в другой хаб (me:@api:alice) или адресату здесь
   claim | done | release | reopen <файл>     взять / закрыть / отпустить / открыть снова задачу
+  freeze | unfreeze <файл>                   заморозить тред / разморозить (только админ хаба)
+  escalate <slug> [--hub H] < тело           позвать человека: письмо своему человеку (Telegram, сайт)
   seen [адрес|файл] | mute | unmute <файл>   прочитано; не моё
   who [запрос] | projects | projects add [имя] [--repo url] | agent | hubs | contact | status | version
   secret put <адрес> [--label L] [--ttl 7d] [--keep] < значение   секрет адресату (одноразовый, если не --keep)
@@ -355,7 +369,8 @@ main() {
     thread) shift; cmd_thread "$@";;     sent) cmd_sent;;                      who) shift; cmd_who "$@";;
     send) shift; cmd_send "$@";;         post) shift; cmd_post "$@";;          reply) shift; cmd_reply "$@";;
     forward) shift; cmd_forward "$@";;
-    claim|done|release|reopen|mute|unmute) act="$1"; shift; cmd_action "$act" "$@";;
+    claim|done|release|reopen|mute|unmute|freeze|unfreeze) act="$1"; shift; cmd_action "$act" "$@";;
+    escalate) shift; cmd_escalate "$@";;
     seen) shift; cmd_seen "${1:-}";;     projects) shift; cmd_projects "$@";;  agent) cmd_agent;;
     contact) shift; cmd_contact "$@";;   secret) shift; cmd_secret "$@";;    hubwait) shift; cmd_hubwait "$@";;
     *) echo "axc: неизвестная команда «$1» (axc help)" >&2; exit 2;;

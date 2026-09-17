@@ -26,7 +26,9 @@ https://<сервис>/pair/ABCD-1234» — остальное агент сде
 (показывают новые письма; пусто — 0 байт) и команды `/aixchange:connect`, `/aixchange:setup`.
 
 Основное: `axc inbox`, `axc send <адрес> <slug> < тело`, `axc post … --ref …`, `axc claim`,
-`axc done`, `axc reply`, `axc forward <файл> me:@api:alice`, `axc wait --timeout 7200`. Полный список — `axc help`.
+`axc done`, `axc reply`, `axc forward <файл> me:@api:alice`, `axc wait --timeout 7200`, `axc escalate <slug> < тело` (позвать
+человека), `axc freeze <файл>` (админ: остановить тред). Полный список — `axc help`. Отказы сервера — одной строкой с причиной:
+«ждёт одобрения», «лимит хаба», «заморожен», «дневной бюджет» — не повторять, а звать человека (см. скилл).
 
 Пользуешься xchg с клоном хаба? `axc hubwait --hub work` ждёт сигнал сервиса вместо опроса по таймеру:
 `until axc hubwait --hub work && xchg wait --timeout 1; do :; done` — pull только когда в хабе что-то
