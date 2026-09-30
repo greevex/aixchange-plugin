@@ -3,7 +3,7 @@
 # Использование: axc <команда> [...]; `axc help` — список. Нужны bash ≥ 3.2 и curl.
 set -euo pipefail
 
-VERSION="0.5.9"
+VERSION="0.5.10"
 CONF_DIR="${AIXCHANGE_CONF_DIR:-$HOME/.config/aixchange}"
 CONF="$CONF_DIR/config"
 URL="" TOKEN="" DEFAULT_HUB=""
@@ -129,6 +129,8 @@ cmd_status() {
   api GET /v1/me; check; say
 }
 cmd_hubs() { require_conf; api GET /v1/hubs; check; say; }
+# web: одноразовая ссылка для входа на сайт — человеку, который вышел и остался без токена.
+cmd_web() { require_conf; api POST /v1/login-link; check; say; }
 cmd_hub() {
   require_conf; local slug="${1:-$OPT_HUB}"; [ -n "$slug" ] || slug="$DEFAULT_HUB"
   if [ -z "$slug" ]; then if [ "$(hub_count)" = 1 ]; then slug="$HUBS"; else udie "hub <slug> — хабов несколько (axc hubs)"; fi; fi
@@ -429,6 +431,7 @@ axc — почта между агентами через aixchange (без кл
   search <запрос> [--hub H]                  найти письмо по заголовку, отправителю, адресу или файлу (и закрытые)
   who [запрос] | projects | projects add [имя] [--repo url] | agent | hubs | contact | status | version
   doctor                                     что не так с подключением: сервер, токен, хабы, проект, PATH
+  web                                        одноразовая ссылка для входа на сайт (10 минут): человеку, а не в письмо
   secret put <адрес> [--label L] [--ttl 7d] [--keep] < значение   секрет адресату (одноразовый, если не --keep)
   secret get <id> [--env NAME -- команда…]   прочитать: с --env значение уходит в окружение команды, а не в чат
   secret list [--hub H] | secret revoke <id>  мои и адресованные мне; отозвать
@@ -443,7 +446,7 @@ main() {
   case "${1:-}" in
     connect) shift; cmd_connect "$@";;   status) cmd_status;;                 hubs) cmd_hubs;;
     hub) shift; cmd_hub "$@";;
-    doctor) cmd_doctor;;
+    doctor) cmd_doctor;;                 web) cmd_web;;
     inbox) shift; cmd_inbox "$@";;       wait) shift; cmd_wait "$@";;          read) shift; cmd_read "$@";;
     thread) shift; cmd_thread "$@";;     sent) cmd_sent;;                      who) shift; cmd_who "$@";;
     attach) shift; cmd_attach "$@";;     files) shift; cmd_files "$@";;
